@@ -1,0 +1,1 @@
+Some typical example of the data for horse-zebra dataset in the desire the directory structure.
