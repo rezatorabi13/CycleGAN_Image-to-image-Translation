@@ -6,7 +6,7 @@ CycleGAN is an image-to-image translation algorithm in the domain of Generative 
 <p align="center">
     <img src="doc/Contex_to_contex.jfif" alt="Figure1" width="800"/>
     <br>
-    <em>DQN agent learned how to play atari game.</em>
+    <em>Domain translation with CycleGAN.</em>
 </p>
 
 
@@ -15,7 +15,7 @@ Here, a CycleGAN have been developed from scratch for image-to-image translation
 <p align="center">
     <img src="doc/Sample_data.png" alt="Figure2" width="500"/>
     <br>
-    <em>DQN agent learned how to play atari game.</em>
+    <em>Samples of horse and zebra data.</em>
 </p>
 
 Some example of one domain (horse images) can be seen on the upper row, while some images of the other domain is shown in the lower row. A sample output after a try to train the model is as follow:  
@@ -23,5 +23,6 @@ Some example of one domain (horse images) can be seen on the upper row, while so
 <p align="center">
     <img src="doc/Output.png" alt="Figure3" width="500"/>
     <br>
-    <em>DQN agent learned how to play atari game.</em>
+    <em>Horse to zebra translation.</em>
 </p>
+
