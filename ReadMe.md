@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="Diffusion%20Model%20Pipeline.png" alt="Diffusion Model — image generation from noise" width="100%"/>
+  <img src="doc/banner.png" alt="CycleGAN: Image-to-Image Translation (Horse ↔ Zebra)" width="100%"/>
 </p>
 
-<h1 align="center">Diffusion Model: Image Generation from Noise</h1>
+<h1 align="center">CycleGAN: Unpaired Image-to-Image Translation</h1>
 
 <p align="center">
-  A Denoising Diffusion Probabilistic Model (DDPM) built from scratch in <b>TensorFlow / Keras</b>, using a time-conditioned U-Net to turn pure Gaussian noise into images.
+  A from-scratch implementation of <b>CycleGAN</b> in TensorFlow/Keras, translating <b>horses → zebras</b> and <b>zebras → horses</b> without paired training data.
 </p>
 
 <p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white">
-  <img alt="TensorFlow" src="https://img.shields.io/badge/TensorFlow-2.x-FF6F00?logo=tensorflow&logoColor=white">
-  <img alt="Model" src="https://img.shields.io/badge/Model-DDPM-8A2BE2">
-  <img alt="Dataset" src="https://img.shields.io/badge/Dataset-CIFAR--10-blue">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white"/>
+  <img alt="TensorFlow" src="https://img.shields.io/badge/TensorFlow-2.x-FF6F00?logo=tensorflow&logoColor=white"/>
+  <img alt="Keras" src="https://img.shields.io/badge/Keras-D00000?logo=keras&logoColor=white"/>
+  <img alt="Task" src="https://img.shields.io/badge/Task-Image--to--Image%20Translation-8A2BE2"/>
 </p>
 
 ---
@@ -20,12 +20,13 @@
 ## Table of Contents
 
 - [Overview](#overview)
-- [How It Works](#how-it-works)
+- [How CycleGAN Works](#how-cyclegan-works)
 - [Model Architecture](#model-architecture)
 - [Project Structure](#project-structure)
 - [Installation](#installation)
+- [Dataset](#dataset)
 - [Usage](#usage)
-- [Configuration](#configuration)
+- [Training Configuration](#training-configuration)
 - [Results](#results)
 - [References](#references)
 
@@ -33,147 +34,154 @@
 
 ## Overview
 
-Diffusion models offer state-of-the-art performance in generative AI for images. They are also a key component of broader tools such as text-to-image generators. This project implements a diffusion model end to end: it gradually corrupts training images with noise and trains a neural network to reverse that process, so new images can be generated starting from random noise.
-
-**Highlights**
-
-- Forward noising process with a linear variance (β) schedule
-- U-Net denoiser with ResNet blocks, linear and full self-attention, and sinusoidal time embeddings
-- Training pipeline on CIFAR-10 via `tensorflow-datasets`
-- Automatic checkpointing and resume-from-checkpoint support
+**CycleGAN** (Cycle-Consistent Generative Adversarial Network) is a generative model that learns a mapping between two image domains, such as photographs and paintings or horses and zebras, using **unpaired** datasets. It does not need image pairs that correspond pixel for pixel. Instead, it relies on a *cycle-consistency* constraint: an image translated to the other domain and back should look like the original.
 
 <p align="center">
-  <img src="example.gif" alt="Generating an image from noise" width="300"/>
+  <img src="doc/Contex_to_contex.jfif" alt="Image-to-image translation between domains" width="420"/>
   <br>
-  <em>Generating an image from noise with the diffusion model.</em>
+  <em>Figure 1. Image-to-image translation maps images from one visual domain to another.</em>
 </p>
 
----
+In this repository, every component (generators, discriminators, composite training models, image pool and training loop) is built from scratch and applied to the classic **horse2zebra** dataset.
 
-## How It Works
+## How CycleGAN Works
 
-A diffusion model consists of two processes:
+The model trains **two generators** and **two discriminators** at the same time:
 
-### 1. Forward process (adding noise)
+| Component | Role |
+|-----------|------|
+| `G_AB` | Translates Domain A (horse) → Domain B (zebra) |
+| `G_BA` | Translates Domain B (zebra) → Domain A (horse) |
+| `D_A`  | Distinguishes real horses from generated horses |
+| `D_B`  | Distinguishes real zebras from generated zebras |
 
-Starting from a clean image $x_0$, Gaussian noise is added over $T$ timesteps according to a fixed schedule $\beta_1, \dots, \beta_T$. Thanks to a closed-form expression, a noisy sample at any timestep $t$ can be drawn directly:
+Each generator is updated through a **composite model** that combines four objectives:
 
-$$
-x_t = \sqrt{\bar{\alpha}_t}\, x_0 + \sqrt{1 - \bar{\alpha}_t}\, \epsilon, \qquad \epsilon \sim \mathcal{N}(0, I)
-$$
+| Loss | Type | Weight | Purpose |
+|------|------|:------:|---------|
+| Adversarial | MSE (LSGAN) | 1 | Make translated images look real to the discriminator |
+| Identity | L1 (MAE) | 5 | Keep an image unchanged when it is already in the target domain |
+| Forward cycle | L1 (MAE) | 10 | `A → B → A` should reconstruct the original `A` |
+| Backward cycle | L1 (MAE) | 10 | `B → A → B` should reconstruct the original `B` |
 
-where $\alpha_t = 1 - \beta_t$ and $\bar{\alpha}_t = \prod_{s=1}^{t} \alpha_s$.
-
-### 2. Reverse process (denoising)
-
-A U-Net $\epsilon_\theta(x_t, t)$ is trained to predict the noise $\epsilon$ that was added to the image. The training objective is the simple mean-squared error:
-
-$$
-\mathcal{L} = \mathbb{E}_{x_0, t, \epsilon}\left[\, \lVert \epsilon - \epsilon_\theta(x_t, t) \rVert^2 \,\right]
-$$
-
-At generation time, the model starts from pure noise $x_T$ and iteratively removes the predicted noise, step by step from $t = T$ down to $1$, until a clean image emerges.
-
----
+To stabilise training, discriminators are updated with a **history buffer of 50 generated images** (image pool) rather than only the latest generator outputs.
 
 ## Model Architecture
 
-The denoising network (`Unet` in [`backward_denoising.py`](backward_denoising.py)) follows the standard DDPM U-Net design:
+**Generator: ResNet-based encoder–transformer–decoder**
 
-| Component | Description |
-|---|---|
-| **Time embedding** | Sinusoidal positional embedding → Dense → GELU → Dense |
-| **Encoder** | Per resolution: 2 × ResNet blocks (time-conditioned via scale/shift) → Linear attention → Downsample |
-| **Bottleneck** | ResNet block → Full multi-head self-attention → ResNet block |
-| **Decoder** | Skip connections from the encoder, 2 × ResNet blocks → Linear attention → Upsample |
-| **Normalization** | Group normalization in ResNet blocks, pre-norm (LayerNorm) before attention |
-| **Output** | ResNet block + 1×1 convolution predicting the noise $\epsilon$ |
+```
+c7s1-64 → d128 → d256 → 9 × ResNet blocks (256) → u128 → u64 → c7s1-3 → tanh
+```
 
-Default channel multipliers are `(1, 2, 4, 8)` with a base width of `64`.
+- Convolution + Instance Normalization + ReLU
+- Two stride-2 downsampling layers and two transposed-convolution upsampling layers
+- 9 residual blocks for 256×256 images
 
----
+**Discriminator: 70×70 PatchGAN**
+
+```
+C64 → C128 → C256 → C512 → C512 → 1-channel patch output
+```
+
+- 4×4 convolutions, LeakyReLU (α = 0.2), Instance Normalization
+- Classifies overlapping image patches as real or fake rather than the whole image
+
+All weights are initialised from a normal distribution (σ = 0.02) and optimised with **Adam** (lr = 2e-4, β₁ = 0.5).
 
 ## Project Structure
 
 ```
-diffusion-model/
-├── parameters.py               # Global hyperparameters (image size, batch size, timesteps)
-├── dataset.py                  # CIFAR-10 loading and preprocessing ([-1, 1] scaling, resizing)
-├── forwad_noising.py           # Forward diffusion: noise sampling and timestep generation
-├── backward_denoising.py       # U-Net denoiser and its building blocks
-├── util.py                     # Loss function (MSE between true and predicted noise)
-├── Train.py                    # Training loop with checkpointing
-├── example.gif                 # Sample generation animation
-└── Diffusion Model Pipeline.png  # Project banner
+CycleGAN_Image-to-image-Translation/
+├── doc/                      # Images used in this README
+├── horse2zebra/              # Sample of the dataset in the expected layout
+│   ├── trainA/               # Horses (train)
+│   ├── trainB/               # Zebras (train)
+│   ├── testA/                # Horses (test)
+│   └── testB/                # Zebras (test)
+├── models/
+│   ├── generator.py          # ResNet generator and residual block
+│   ├── discriminator.py      # PatchGAN discriminator
+│   └── composite_model.py    # Generator training model (adversarial + identity + cycle losses)
+├── preprocessing.py          # Loads images, resizes to 256×256, saves horse2zebra_256.npz
+├── train.py                  # Training loop
+├── util.py                   # Data sampling, image pool, checkpointing, visualisation
+└── main.py                   # Entry point: builds the models and starts training
 ```
-
----
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone <repository-url>
-cd diffusion-model
+cd CycleGAN_Image-to-image-Translation
 
-# (Optional) create a virtual environment
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install tensorflow tensorflow-addons tensorflow-datasets einops numpy matplotlib tqdm pillow
+pip install tensorflow numpy matplotlib
+pip install git+https://www.github.com/keras-team/keras-contrib.git   # InstanceNormalization layer
 ```
 
-> **Note:** A CUDA-enabled GPU is strongly recommended for training. `Train.py` reserves up to 80% of GPU memory by default.
+## Dataset
 
----
+The project uses the **horse2zebra** dataset from the original CycleGAN paper (about 1,000 horse images and 1,300 zebra images). The [`horse2zebra/`](horse2zebra/) folder contains only a few sample images to show the expected layout.
+
+1. Download the full dataset:
+   ```bash
+   wget https://efrosgans.eecs.berkeley.edu/cyclegan/datasets/horse2zebra.zip
+   unzip horse2zebra.zip
+   ```
+2. Make sure the folders follow the `trainA / trainB / testA / testB` structure shown above.
+
+<p align="center">
+  <img src="doc/Sample_data.png" alt="Sample data" width="520"/>
+  <br>
+  <em>Figure 2. Sample training data: horses (Domain A, top) and zebras (Domain B, bottom).</em>
+</p>
 
 ## Usage
 
-### Train the model
+**1. Preprocess the data.** Images are resized to 256×256 and stored in a single compressed NumPy file:
 
 ```bash
-python Train.py
+python preprocessing.py
+# -> horse2zebra_256.npz
 ```
 
-The script will:
+**2. Train the model:**
 
-1. Download and preprocess CIFAR-10 (on first run).
-2. Build the U-Net and restore the latest checkpoint from `./checkpoints` if one exists.
-3. Train for the configured number of epochs, printing the average loss per epoch.
-4. Save a checkpoint after every epoch (keeping the 2 most recent).
+```bash
+python main.py
+```
 
----
+During training the script:
 
-## Configuration
+- logs discriminator and generator losses at every step: `>step, dA[real,fake] dB[real,fake] g[AtoB,BtoA]`
+- saves sample translations after every epoch (`AtoB_generated_plot_XXXXXX.png`, `BtoA_generated_plot_XXXXXX.png`)
+- saves generator checkpoints every 5 epochs (`g_model_AtoB_XXXXXX.h5`, `g_model_BtoA_XXXXXX.h5`)
 
-Hyperparameters live in [`parameters.py`](parameters.py) and [`Train.py`](Train.py):
+## Training Configuration
 
-| Parameter | Default | Description |
-|---|---|---|
-| `BATCH_SIZE` | `128` | Training batch size |
-| `timesteps` | `200` | Number of diffusion steps $T$ |
-| β schedule | linear, `1e-4` → `0.02` | Noise variance schedule |
-| Image size | `32 × 32` | Resolution after preprocessing |
-| Optimizer | Adam, `lr = 1e-4` | Training optimizer |
-| `epochs` | `10` | Number of training epochs |
+| Parameter | Value |
+|-----------|-------|
+| Image size | 256 × 256 × 3 |
+| Pixel scaling | [-1, 1] |
+| Batch size | 1 |
+| Epochs | 10 (set in `train.py`) |
+| Optimizer | Adam (lr = 0.0002, β₁ = 0.5) |
+| Image pool size | 50 |
+| Loss weights (adv / id / fwd / bwd) | 1 / 5 / 10 / 10 |
 
----
+> **Tip:** The original paper trains for about 200 epochs. Increase `n_epochs` in [`train.py`](train.py) for higher-quality translations.
 
 ## Results
 
-The animation in the [Overview](#overview) section shows the reverse diffusion process: starting from pure Gaussian noise, the trained model progressively denoises the sample into a coherent image.
+Sample horse → zebra translations after a short training run (input on top, generated output below):
 
----
+<p align="center">
+  <img src="doc/Output.png" alt="Model output" width="520"/>
+  <br>
+  <em>Figure 3. Real horse images (top) and their translated zebra counterparts (bottom).</em>
+</p>
 
 ## References
 
-- Ho, J., Jain, A., & Abbeel, P. (2020). [*Denoising Diffusion Probabilistic Models*](https://arxiv.org/abs/2006.11239). NeurIPS.
-- Sohl-Dickstein, J., et al. (2015). [*Deep Unsupervised Learning using Nonequilibrium Thermodynamics*](https://arxiv.org/abs/1503.03585). ICML.
-- Ronneberger, O., Fischer, P., & Brox, T. (2015). [*U-Net: Convolutional Networks for Biomedical Image Segmentation*](https://arxiv.org/abs/1505.04597). MICCAI.
-
----
-
-<p align="center">
-  If you find this project useful, consider giving it a ⭐
-</p>
+- J.-Y. Zhu, T. Park, P. Isola, A. A. Efros. [*Unpaired Image-to-Image Translation using Cycle-Consistent Adversarial Networks*](https://arxiv.org/abs/1703.10593). ICCV 2017.
+- [Official CycleGAN project page](https://junyanz.github.io/CycleGAN/)
